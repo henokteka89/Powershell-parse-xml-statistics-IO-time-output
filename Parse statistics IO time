@@ -1,0 +1,117 @@
+--To see in GRID
+# Paste your SET STATISTICS TIME, IO ON output into this variable
+$text = @'
+<paste your output here></paste your output here>
+'@
+
+# Initialize totals
+$totalCpu = 0
+$totalElapsed = 0
+$tableStats = @{}
+
+# Parse each line
+$text -split "`n" | ForEach-Object {
+    $line = $_.Trim()
+    
+    if ($line -match 'CPU time = (\d+) ms') {
+        $totalCpu += [int]$matches[1]
+    }
+
+    if ($line -match 'elapsed time = (\d+) ms') {
+        $totalElapsed += [int]$matches[1]
+    }
+
+    if ($line -match "Table '([^']+)'.*Scan count (\d+), logical reads (\d+), physical reads (\d+),.*read-ahead reads (\d+)") {
+        $table = $matches[1]
+        $scan = [int]$matches[2]
+        $logical = [int]$matches[3]
+        $physical = [int]$matches[4]
+        $readahead = [int]$matches[5]
+
+        if (-not $tableStats.ContainsKey($table)) {
+            $tableStats[$table] = [PSCustomObject]@{
+                TableName       = $table
+                ScanCount       = 0
+                LogicalReads    = 0
+                PhysicalReads   = 0
+                ReadAheadReads  = 0
+            }
+        }
+
+        $tableStats[$table].ScanCount       += $scan
+        $tableStats[$table].LogicalReads    += $logical
+        $tableStats[$table].PhysicalReads   += $physical
+        $tableStats[$table].ReadAheadReads  += $readahead
+    }
+}
+
+# Add summary row
+$tableStats["TOTAL"] = [PSCustomObject]@{
+    TableName       = "(TOTAL)"
+    ScanCount       = ""
+    LogicalReads    = ""
+    PhysicalReads   = ""
+    ReadAheadReads  = ""
+}
+
+$tableStats["TOTAL"].TableName = "[TOTAL CPU: $totalCpu ms | Elapsed: $totalElapsed ms]"
+
+# Show in grid view
+$tableStats.Values | Sort-Object TableName | Out-GridView -Title "SQL Server I/O and Time Breakdown"
+
+
+
+---See in table within PS
+
+# Paste your SET STATISTICS TIME, IO ON output into this variable
+$text = @'
+<paste your output here></paste your output here>
+'@
+
+# Initialize totals
+$totalCpu = 0
+$totalElapsed = 0
+$tableStats = @{}
+
+# Parse each line
+$text -split "`n" | ForEach-Object {
+    $line = $_.Trim()
+    
+    if ($line -match 'CPU time = (\d+) ms') {
+        $totalCpu += [int]$matches[1]
+    }
+
+    if ($line -match 'elapsed time = (\d+) ms') {
+        $totalElapsed += [int]$matches[1]
+    }
+
+    if ($line -match "Table '([^']+)'.*Scan count (\d+), logical reads (\d+), physical reads (\d+),.*read-ahead reads (\d+)") {
+        $table = $matches[1]
+        $scan = [int]$matches[2]
+        $logical = [int]$matches[3]
+        $physical = [int]$matches[4]
+        $readahead = [int]$matches[5]
+
+        if (-not $tableStats.ContainsKey($table)) {
+            $tableStats[$table] = [PSCustomObject]@{
+                TableName = $table
+                ScanCount = 0
+                LogicalReads = 0
+                PhysicalReads = 0
+                ReadAheadReads = 0
+            }
+        }
+
+        $tableStats[$table].ScanCount += $scan
+        $tableStats[$table].LogicalReads += $logical
+        $tableStats[$table].PhysicalReads += $physical
+        $tableStats[$table].ReadAheadReads += $readahead
+    }
+}
+
+# Output summary
+Write-Host "=== Execution Summary ==="
+Write-Host "Total CPU Time: $totalCpu ms"
+Write-Host "Total Elapsed Time: $totalElapsed ms"
+Write-Host "=== Table-Level I/O Breakdown ==="
+$tableStats.Values | Sort-Object TableName | Format-Table -AutoSize
