@@ -1,79 +1,70 @@
--- Step 1: Identify IsClinicClient
-WITH IsClinicClients AS (
-    SELECT CLIENTID, 1 AS IsClinicClient
+-- 1. Prep IsClinic info
+WITH IsClinic AS (
+    SELECT CLIENTID
     FROM dbo.CLIENTACCOUNTS
     WHERE CLIENTACCOUNT < 100000
 ),
 
--- Step 2: Determine client matches by branching only into the appropriate logic
-BranchResults AS (
-    -- Sub-client or Clinic
-    SELECT 
+-- 2. Get per-subscriber logic path + matching clients
+SubscriberClients AS (
+    SELECT
         s.myScreenuserID,
         s.ClientTypeID,
         s.ClientID AS SubscriberClientID,
         s.DynamicClientID AS SubscriberDynamicClientID,
         ca.ClientID
     FROM #subscribers s
-    LEFT JOIN IsClinicClients ic ON ic.CLIENTID = s.ClientID
-    JOIN dbo.CLIENTACCOUNTS ca WITH (NOLOCK)
-        ON ca.CLIENTID = s.ClientID AND ca.ACTIVE = 1
-    WHERE s.ClientTypeID = 0 OR ic.IsClinicClient = 1
+    LEFT JOIN IsClinic ic ON s.ClientID = ic.CLIENTID
 
-    UNION ALL
+    -- SUB-CLIENT / CLINIC LOGIC
+    LEFT JOIN dbo.CLIENTACCOUNTS ca WITH (NOLOCK)
+        ON (s.ClientTypeID = 0 OR ic.CLIENTID IS NOT NULL)
+        AND ca.CLIENTID = s.ClientID
+        AND ca.ACTIVE = 1
 
-    -- Master
-    SELECT 
-        s.myScreenuserID,
-        s.ClientTypeID,
-        s.ClientID AS SubscriberClientID,
-        s.DynamicClientID AS SubscriberDynamicClientID,
-        ca.ClientID
-    FROM #subscribers s
-    LEFT JOIN IsClinicClients ic ON ic.CLIENTID = s.ClientID
-    JOIN dbo.CLIENTACCOUNTS master WITH (NOLOCK)
-        ON master.CLIENTID = s.ClientID AND master.ACTIVE = 1
-    JOIN dbo.CLIENTACCOUNTS ca WITH (NOLOCK)
-        ON ca.CLIENTACCOUNT = master.CLIENTACCOUNT AND ca.ACTIVE = 1
-    WHERE s.ClientTypeID = 1 AND ic.IsClinicClient IS NULL
+    -- MASTER CLIENT LOGIC
+    LEFT JOIN dbo.CLIENTACCOUNTS master WITH (NOLOCK)
+        ON s.ClientTypeID = 1 AND ic.CLIENTID IS NULL AND master.CLIENTID = s.ClientID AND master.ACTIVE = 1
+    LEFT JOIN dbo.CLIENTACCOUNTS ca2 WITH (NOLOCK)
+        ON s.ClientTypeID = 1 AND ic.CLIENTID IS NULL
+        AND ca2.CLIENTACCOUNT = master.CLIENTACCOUNT
+        AND ca2.ACTIVE = 1
 
-    UNION ALL
-
-    -- Dynamic
-    SELECT 
-        s.myScreenuserID,
-        s.ClientTypeID,
-        s.ClientID AS SubscriberClientID,
-        s.DynamicClientID AS SubscriberDynamicClientID,
-        ca.ClientID
-    FROM #subscribers s
-    LEFT JOIN IsClinicClients ic ON ic.CLIENTID = s.ClientID
-    CROSS APPLY dbo.fn_DCG_GetClientIDsForDynamicClientID(s.DynamicClientID) ca
-    WHERE s.ClientTypeID = 3 AND ic.IsClinicClient IS NULL
+    -- DYNAMIC LOGIC
+    OUTER APPLY (
+        SELECT ClientID
+        FROM dbo.fn_DCG_GetClientIDsForDynamicClientID(s.DynamicClientID)
+    ) ca3
+    WHERE
+        (
+            -- Apply matching only to the correct type
+            (s.ClientTypeID = 0 OR ic.CLIENTID IS NOT NULL AND ca.ClientID IS NOT NULL AND ca.ClientID = s.ClientID)
+            OR
+            (s.ClientTypeID = 1 AND ic.CLIENTID IS NULL AND ca2.ClientID IS NOT NULL AND ca2.ClientID = s.ClientID)
+            OR
+            (s.ClientTypeID = 3 AND ic.CLIENTID IS NULL AND ca3.ClientID = s.ClientID)
+        )
 ),
 
--- Step 3: Only keep rows where ClientID matches original subscriber’s ClientID
-MatchingClients AS (
-    SELECT *
-    FROM BranchResults
-    WHERE ClientID = SubscriberClientID
-),
-
--- Step 4: Join with notification subscriptions for insert
-FinalData AS (
-    SELECT 
-        mc.myScreenuserID,
+-- 3. Join with myScreen data
+Final AS (
+    SELECT
+        sc.myScreenuserID,
         ns.myScreenUserNotificationTypeID,
-        mc.ClientID,
-        mc.SubscriberDynamicClientID
-    FROM MatchingClients mc
-    JOIN dbo.myScreenLogon mel ON mel.UserID = mc.myScreenuserID
+        sc.SubscriberClientID,
+        sc.SubscriberDynamicClientID
+    FROM SubscriberClients sc
+    JOIN dbo.myScreenLogon mel ON mel.UserID = sc.myScreenuserID
     JOIN dbo.myScreenUserNotificationSubscriptions ns ON ns.myScreenUserID = mel.UserID
     WHERE ns.myScreenUserNotificationTypeID IN (1, 4)
       AND (ns.EmailAddressVerified = 1 OR ns.TextNumberVerified = 1)
 )
 
--- Final insert
+-- 4. Final insert
 INSERT INTO #subscriberstonotify (myScreenuserID, myScreenUserNotificationTypeID, ClientID, DynamicClientID)
-SELECT myScreenuserID, myScreenUserNotificationTypeID, ClientID, SubscriberDynamicClientID
-FROM FinalData;
+SELECT
+    myScreenuserID,
+    myScreenUserNotificationTypeID,
+    SubscriberClientID,
+    SubscriberDynamicClientID
+FROM Final;
